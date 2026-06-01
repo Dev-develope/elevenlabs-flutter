@@ -47,6 +47,25 @@ class LiveKitManager {
   bool get isMuted =>
       !(_room?.localParticipant?.isMicrophoneEnabled() ?? false);
 
+  /// Adds [value] to [controller] only if it is still open.
+  ///
+  /// LiveKit room events can be delivered via a queued microtask after the
+  /// manager has been disposed and the controllers closed. Adding to a closed
+  /// broadcast controller throws "Bad state: Cannot add new events after
+  /// calling close", so every emission is routed through this guard.
+  void _safeAdd<T>(StreamController<T> controller, T value) {
+    if (!controller.isClosed) {
+      controller.add(value);
+    }
+  }
+
+  /// Adds [error] to [controller] only if it is still open. See [_safeAdd].
+  void _safeAddError<T>(StreamController<T> controller, Object error) {
+    if (!controller.isClosed) {
+      controller.addError(error);
+    }
+  }
+
   /// Connects to a LiveKit server
   Future<void> connect(String serverUrl, String token) async {
     try {
@@ -67,30 +86,32 @@ class LiveKitManager {
 
       _eventsListener!
         ..on<RoomConnectedEvent>((event) {
-          _stateStreamController.add(ConnectionState.connected);
+          _safeAdd(_stateStreamController, ConnectionState.connected);
         })
         ..on<RoomDisconnectedEvent>((event) {
-          _stateStreamController.add(ConnectionState.disconnected);
-          _disconnectStreamController.add('error');
+          _safeAdd(_stateStreamController, ConnectionState.disconnected);
+          _safeAdd(_disconnectStreamController, 'error');
         })
         ..on<RoomReconnectingEvent>((event) {
-          _stateStreamController.add(ConnectionState.reconnecting);
+          _safeAdd(_stateStreamController, ConnectionState.reconnecting);
         })
         ..on<RoomReconnectedEvent>((event) {
-          _stateStreamController.add(ConnectionState.connected);
+          _safeAdd(_stateStreamController, ConnectionState.connected);
         })
         ..on<DataReceivedEvent>((event) {
           // Handle incoming data messages
           try {
             final data = utf8.decode(event.data);
             final message = jsonDecode(data) as Map<String, dynamic>;
-            _dataStreamController.add(message);
+            _safeAdd(_dataStreamController, message);
           } on FormatException catch (e) {
-            _dataStreamController.addError(
+            _safeAddError(
+              _dataStreamController,
               Exception('Failed to decode message data: ${e.message}'),
             );
           } catch (e) {
-            _dataStreamController.addError(
+            _safeAddError(
+              _dataStreamController,
               Exception('Error processing data message: $e'),
             );
           }
@@ -98,8 +119,8 @@ class LiveKitManager {
         ..on<ParticipantDisconnectedEvent>((event) {
           // If the agent disconnects, we should end the session
           if (event.participant.identity.startsWith('agent-')) {
-            _stateStreamController.add(ConnectionState.disconnected);
-            _disconnectStreamController.add('agent');
+            _safeAdd(_stateStreamController, ConnectionState.disconnected);
+            _safeAdd(_disconnectStreamController, 'agent');
           }
         })
         ..on<AudioPlaybackStatusChanged>((event) async {
@@ -108,7 +129,8 @@ class LiveKitManager {
             try {
               await _room!.startAudio();
             } catch (e) {
-              _dataStreamController.addError(
+              _safeAddError(
+                _dataStreamController,
                 Exception('Failed to start audio playback: $e'),
               );
             }
@@ -129,7 +151,8 @@ class LiveKitManager {
       try {
         await Hardware.instance.setSpeakerphoneOn(true);
       } catch (e) {
-        _dataStreamController.addError(
+        _safeAddError(
+          _dataStreamController,
           Exception('Could not enable speakerphone: $e'),
         );
       }
@@ -145,9 +168,12 @@ class LiveKitManager {
       );
 
       // Emit room ready event - connection is fully established and ready for messages
-      _roomReadyController.add(null);
+      _safeAdd(_roomReadyController, null);
     } catch (e) {
-      _dataStreamController.addError(Exception('LiveKit Connection Error: $e'));
+      _safeAddError(
+        _dataStreamController,
+        Exception('LiveKit Connection Error: $e'),
+      );
       rethrow;
     }
   }
@@ -165,7 +191,10 @@ class LiveKitManager {
 
       await currentRoom.localParticipant?.publishData(bytes, reliable: true);
     } catch (e) {
-      _dataStreamController.addError(Exception('Failed to send message: $e'));
+      _safeAddError(
+        _dataStreamController,
+        Exception('Failed to send message: $e'),
+      );
       rethrow;
     }
   }
@@ -191,7 +220,7 @@ class LiveKitManager {
 
       if (_lastSpeakingState != isSpeaking) {
         _lastSpeakingState = isSpeaking;
-        _speakingStateController.add(isSpeaking);
+        _safeAdd(_speakingStateController, isSpeaking);
       }
     } else {
       // Agent stopped speaking - debounce to avoid flickering during pauses
@@ -199,7 +228,7 @@ class LiveKitManager {
       _speakingDebounceTimer = Timer(const Duration(milliseconds: 800), () {
         if (_lastSpeakingState != isSpeaking) {
           _lastSpeakingState = isSpeaking;
-          _speakingStateController.add(isSpeaking);
+          _safeAdd(_speakingStateController, isSpeaking);
         }
       });
     }
@@ -223,13 +252,15 @@ class LiveKitManager {
         await currentRoom.disconnect().timeout(
           const Duration(seconds: 3),
           onTimeout: () {
-            _dataStreamController.addError(
+            _safeAddError(
+              _dataStreamController,
               Exception('Disconnect timeout - forcing cleanup'),
             );
           },
         );
       } catch (e) {
-        _dataStreamController.addError(
+        _safeAddError(
+          _dataStreamController,
           Exception('Error during disconnect: $e'),
         );
       }
@@ -237,7 +268,10 @@ class LiveKitManager {
       try {
         await currentRoom.dispose();
       } catch (e) {
-        _dataStreamController.addError(Exception('Error disposing room: $e'));
+        _safeAddError(
+          _dataStreamController,
+          Exception('Error disposing room: $e'),
+        );
       }
 
       _room = null;
@@ -246,11 +280,16 @@ class LiveKitManager {
 
   /// Disposes of all resources
   Future<void> dispose() async {
+    // Tear down the room/listener BEFORE closing the controllers. Disconnecting
+    // can emit a final RoomDisconnectedEvent and the disconnect path itself
+    // reports errors on _dataStreamController; doing it first (combined with the
+    // _safeAdd guards) prevents "Cannot add new events after calling close".
+    await disconnect();
+
     await _dataStreamController.close();
     await _stateStreamController.close();
     await _disconnectStreamController.close();
     await _roomReadyController.close();
     await _speakingStateController.close();
-    await disconnect();
   }
 }

@@ -193,8 +193,14 @@ class ConversationClient extends ChangeNotifier {
       // Start message handling
       _messageHandler.startListening();
 
-      // Start waiting for room ready event BEFORE connecting
-      final roomReadyFuture = _liveKitManager.roomReadyStream.first;
+      // Start waiting for room ready event BEFORE connecting.
+      // Attach an error handler so that if connect() fails or the session is
+      // torn down before the room becomes ready, the roomReady controller
+      // closing without emitting doesn't surface "Bad state: No element" as an
+      // unhandled async error. The real failure is reported via connect()'s
+      // throw and the disconnect handler.
+      final roomReadyFuture =
+          _liveKitManager.roomReadyStream.first.catchError((Object _) {});
 
       // Connect to LiveKit (will emit roomReady event when done)
       await _liveKitManager.connect(wsUrl, token);
