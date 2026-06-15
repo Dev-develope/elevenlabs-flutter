@@ -16,5 +16,10 @@ export 'src/models/events.dart';
 // Tools
 export 'src/tools/client_tools.dart';
 
+// Text-to-speech providers (standalone, independent of ConversationClient)
+export 'src/tts/tts_provider.dart';
+export 'src/tts/tts_models.dart';
+export 'src/tts/sixtydb_tts_provider.dart';
+
 // Version
 export 'version.dart';

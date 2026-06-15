@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Standalone text-to-speech provider abstraction (`TtsProvider`) with a 60db implementation (`SixtyDbTtsProvider`). It is independent of `ConversationClient` and supports all three 60db transports: one-shot HTTP (`POST /tts-synthesize`), NDJSON streaming (`POST /tts-stream`), and the `/ws/tts` WebSocket, selectable via `SixtyDbStreamTransport`. Configure with a `SIXTYDB_API_KEY`. Adds a `web_socket_channel` dependency.
+
 ## [0.6.1] - 2026-06-01
 
 ### Fixed
